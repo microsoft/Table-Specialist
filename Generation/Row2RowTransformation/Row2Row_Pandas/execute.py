@@ -1,7 +1,7 @@
 import json
 import pandas as pd
 import os
-import subprocess
+from table_specialist_sandbox import run_generated_code, ensure_sandbox
 from multiprocessing import Pool
 from tqdm import tqdm
 
@@ -21,8 +21,7 @@ def execute_one(exec_dir):
 
             # run the python code
             try:
-                result = subprocess.run(
-                    ['python3', "query.py"], capture_output=True, text=True, timeout=10)
+                result = run_generated_code(os.getcwd(), "python", "query.py", timeout=10)
                 exit_code = result.returncode
                 output = result.stdout.strip()
                 error = result.stderr.strip()
@@ -52,6 +51,7 @@ if __name__ == "__main__":
     parser.add_argument("exec_dir", type=str, nargs="+",
                         help="The directory to execute")
     args = parser.parse_args()
+    ensure_sandbox("python")
     
     for exec_dir in args.exec_dir:
         print(f"Executing {exec_dir}")

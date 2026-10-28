@@ -12,7 +12,8 @@ from sqlglot.diff import Keep, Move
 import sqlite3
 import time
 import shutil
-import subprocess
+import tempfile
+from table_specialist_sandbox import run_generated_code, ensure_sandbox, SandboxExecutionError
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 from pandas.errors import EmptyDataError
@@ -23,14 +24,18 @@ class SQLStandardizeError(Exception):
 
 
 def _run_spark(exec_dir, scala_path, num_cpu):
-    cur_dir = os.getcwd()
-    os.chdir(exec_dir)
-    print(f"Running SparkScala code in {scala_path}")
-    with open(scala_path+".log", "w+") as outfile, open(scala_path+".err", "w+") as errfile:
-        proc = subprocess.Popen(["spark-shell", "--conf", "spark.ui.enabled=False", "--master", f"local[{num_cpu}]"], stdin=subprocess.PIPE, stdout=outfile, stderr=errfile, text=True)
-        proc.communicate(f":load {scala_path}\n")
-    os.chdir(cur_dir)
-    return
+    # Each model output gets its own container and its own input table.
+    try:
+        result = run_generated_code(exec_dir, "scala", os.path.basename(scala_path), num_cpu=num_cpu)
+    except SandboxExecutionError as exc:
+        with open(scala_path + ".err", "w", encoding="utf-8") as file:
+            file.write(str(exc))
+        return False
+    with open(scala_path + ".log", "w", encoding="utf-8") as file:
+        file.write(result.stdout)
+    with open(scala_path + ".err", "w", encoding="utf-8") as file:
+        file.write(result.stderr)
+    return result.returncode == 0
 
 
 class NSSEvaluator(BaseEvaluator):
@@ -38,7 +43,7 @@ class NSSEvaluator(BaseEvaluator):
         super().__init__()
         self.answer_key = "SparkScala"
 
-    def _evaluate_row(self, y_true_sql, y_pred_scala, test_id, exec_dir, benchmark="WikiSQL"):
+    def _evaluate_row(self, y_true_sql, y_pred_scala, test_id, exec_dir, benchmark="WikiSQL", result_dir=None):
         y_pred_res = None
         y_true_res = None
         y_pred_res_path = None
@@ -140,17 +145,15 @@ class NSSEvaluator(BaseEvaluator):
             y_true_res = [[pd.to_numeric(x, errors='ignore')] for x in y_true_sql.split('|')]
             csv_path = f"<PATH-TO-TableSpecialist>/Finetune/data/data_v2.0/NL2Pandas/benchmark/test/WikiQA/{test_id}/data.csv"
 
-        cur_exec_dir = None
+        cur_exec_dir = result_dir
         if y_pred_scala == "ScalaCodeNotFound":
             y_pred_res = None
         else:
             try:
-                cur_dir = os.getcwd()
-
-                assert os.path.isdir(f"{exec_dir}/result_{benchmark}_{test_id}"), "No result folder after SparkScala execution"
-                out_csv = [x for x in os.listdir(f"{exec_dir}/result_{benchmark}_{test_id}") if x.endswith(".csv")]
+                assert result_dir and os.path.isdir(result_dir), "No result folder after sandboxed SparkScala execution"
+                out_csv = [x for x in os.listdir(result_dir) if x.endswith(".csv")]
                 assert len(out_csv) == 1, "No output csv file"
-                y_pred_res_path = os.path.abspath(os.path.join(f"{exec_dir}/result_{benchmark}_{test_id}", out_csv[0]))
+                y_pred_res_path = os.path.abspath(os.path.join(result_dir, out_csv[0]))
                 try:
                     y_pred_res = pd.read_csv(
                         y_pred_res_path, index_col=False, header=0).applymap(lambda x: pd.to_numeric(x, errors='ignore')).fillna("None").values.tolist()
@@ -161,8 +164,6 @@ class NSSEvaluator(BaseEvaluator):
                 print("Error y_pred")
                 print(e)
                 y_pred_res = "SparkScalaExecutionError"
-            finally:
-                os.chdir(cur_dir)
 
 
         flag = False
@@ -223,7 +224,7 @@ class NSSEvaluator(BaseEvaluator):
         row_res["scala_exec"] = row.scala_exec
         row_res["y_gt"] = self._get_gt(row_res["label"])
         row_eval = self._evaluate_row(
-            row_res["y_gt"], row_res["y_pred"], row_res["dataset"], exec_dir, benchmark=row_res["benchmark"])
+            row_res["y_gt"], row_res["y_pred"], row_res["dataset"], exec_dir, benchmark=row_res["benchmark"], result_dir=row["scala_result_dir"])
         for k, v in row_eval.items():
             row_res[k] = v
 
@@ -251,7 +252,8 @@ class NSSEvaluator(BaseEvaluator):
 
     
     def batch_run_spark(self, exec_dir, raw_result, n_jobs=1):
-        scala_code_s = []
+        params = []
+        result_dirs = []
         scala_code_execs = []
         for _, row in raw_result.iterrows():
             metadata = utils.parse_metadata(row["metadata"])
@@ -303,40 +305,29 @@ class NSSEvaluator(BaseEvaluator):
             if scala_code.find("data.csv") == -1 or scala_code.find(""".write.option("header", "true").csv("result")""") == -1:
                 print("Scala code format error")
                 scala_code_execs.append("ScalaCodeError")
+                result_dirs.append(None)
                 continue
-            scala_code = scala_code.replace("data.csv", csv_path)
-            scala_code = scala_code.replace(""".write.option("header", "true").csv("result")""", f""".write.option("header", "true").csv("{exec_dir}/result_{metadata['benchmark']}_{test_id}")""")
-            scala_code_s.append(scala_code)
+            # Never share a shell between predictions, or expose benchmark host paths.
+            case_dir = tempfile.mkdtemp(prefix="scala_", dir=exec_dir)
+            shutil.copyfile(csv_path, os.path.join(case_dir, "data.csv"))
+            scala_path = os.path.join(case_dir, "query.scala")
+            with open(scala_path, "w", encoding="utf-8") as file:
+                file.write(scala_code)
+            params.append((case_dir, scala_path, 1))
+            result_dirs.append(os.path.join(case_dir, "result_scala"))
             scala_code_execs.append(scala_code)
 
-        scala_lists = []
-        cur_list = []
-        for scala_code in scala_code_s:
-            cur_list.append(scala_code)
-            if len(cur_list) == len(scala_code_s) // n_jobs + 1:
-                scala_lists.append(cur_list)
-                cur_list = []
-        if len(cur_list) > 0:
-            scala_lists.append(cur_list)
-
-        print(raw_result.shape[0])
-        print(len(scala_code_s), sum([len(x) for x in scala_lists]))
-        for i, scala_list in enumerate(scala_lists):
-            print(len(scala_list))
-            with open(f"{exec_dir}/all_scala_code_{i}.scala", "w") as outfile:
-                for scala_code in scala_list:
-                    outfile.write(scala_code + '\n:reset\n')
-                outfile.write(":quit\n")
-        
         with Pool(n_jobs) as pool:
-            pool.starmap(_run_spark, [(exec_dir, f"{exec_dir}/all_scala_code_{i}.scala", cpu_count() // n_jobs) for i in range(len(scala_lists))])
-
-        return scala_code_execs
+            pool.starmap(_run_spark, params)
+        return scala_code_execs, result_dirs
 
     
 
 
     def parse_raw_result(self, raw_result, n_jobs=1):
+        ensure_sandbox("scala")
+        if n_jobs < 1:
+            raise ValueError("n_jobs must be positive")
         result = []
         print("n_jobs", n_jobs)
         # prepare for SparkScala runtime
@@ -346,12 +337,14 @@ class NSSEvaluator(BaseEvaluator):
         print("exec_dir", exec_dir)
         os.mkdir(exec_dir)
 
-        scala_code_execs = self.batch_run_spark(exec_dir, raw_result, n_jobs=n_jobs)
+        scala_code_execs, result_dirs = self.batch_run_spark(exec_dir, raw_result, n_jobs=n_jobs)
+        raw_result = raw_result.copy()
         raw_result["scala_exec"] = scala_code_execs
+        raw_result["scala_result_dir"] = result_dirs
 
 
         if n_jobs == 1:
-            for _, row in raw_result.head(5).iterrows():
+            for _, row in raw_result.iterrows():
                 row_res = self.parse_raw(row, exec_dir)
                 result.append(row_res)
         else:

@@ -6,7 +6,7 @@ import numpy as np
 import os
 import time
 from multiprocessing import Pool
-import subprocess
+from table_specialist_sandbox import run_generated_code, ensure_sandbox
 from pandas.errors import EmptyDataError
 import json
 
@@ -59,8 +59,8 @@ class R2RBaseEvaluator(BaseEvaluator):
 
                 # run the python code
                 try:
-                    result = subprocess.run(
-                        [self.run_time_executive, self.run_time_file], capture_output=True, text=True, timeout=10)
+                    result = run_generated_code(
+                        os.getcwd(), self.pl, self.run_time_file, timeout=10)
                     exit_code = result.returncode
                     output = result.stdout.strip()
                     error = result.stderr.strip()
@@ -172,6 +172,8 @@ class R2RBaseEvaluator(BaseEvaluator):
         return row_res
     
     def parse_raw_result(self, raw_result, n_jobs=1):
+        if self.pl in {"python", "r"}:
+            ensure_sandbox(self.pl)
         result = []
         print("n_jobs", n_jobs)
         

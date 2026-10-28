@@ -12,7 +12,7 @@ from sqlglot.diff import Keep, Move
 import sqlite3
 import time
 import shutil
-import subprocess
+from table_specialist_sandbox import run_generated_code, ensure_sandbox
 from multiprocessing import Pool
 from pandas.errors import EmptyDataError
 
@@ -139,8 +139,7 @@ class NREvaluator(BaseEvaluator):
                 with open ("query.R", "w") as f:
                     f.write(y_pred_r)
                 # run the R code
-                result = subprocess.run(
-                    ['Rscript', "query.R"], capture_output=True, text=True)
+                result = run_generated_code(os.getcwd(), "r", "query.R", timeout=15)
                 exit_code = result.returncode
                 output = result.stdout.strip()
                 error = result.stderr.strip()
@@ -242,6 +241,7 @@ class NREvaluator(BaseEvaluator):
 
     
     def parse_raw_result(self, raw_result, n_jobs=1):
+        ensure_sandbox("r")
         result = []
         print("n_jobs", n_jobs)
         # prepare for R runtime

@@ -59,6 +59,8 @@ We do not recommend using Table-Specialist in the context of high-risk decision 
 
 ## How to get started 
 
+**Security prerequisite for generated-code execution:** Python, R, and SparkScala outputs are untrusted code. Host execution is disabled. Install and configure the isolated runner described in [sandbox/README.md](sandbox/README.md) before running generation, validation, or code-evaluation scripts. Do not run extracted code files directly on your workstation.
+
 To begin using Table-Specialist, please see details at https://github.com/microsoft/Table-Specialist?tab=readme-ov-file for code and instruction. 
 
  
