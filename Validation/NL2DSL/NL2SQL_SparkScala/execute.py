@@ -1,7 +1,7 @@
 import json
 import pandas as pd
 import os
-import subprocess
+from table_specialist_sandbox import run_generated_code, ensure_sandbox, SandboxExecutionError
 import sqlite3
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
@@ -9,17 +9,18 @@ import shutil
 
 def _run_spark(params):
     exec_dir, scala_path, num_cpu = params
-    cur_dir = os.getcwd()
-    os.chdir(exec_dir)
-    pid = os.getpid()
-    print(f"Running SparkScala code in {scala_path.split('/')[-1]} with pid {pid}")
-    # print(f"Running SparkScala code in {scala_path}")
-    with open(scala_path+".log", "w+") as outfile, open(scala_path+".err", "w+") as errfile:
-        proc = subprocess.Popen(["spark-shell", "--conf", "spark.ui.enabled=False", "--master", f"local[{num_cpu}]"], stdin=subprocess.PIPE, stdout=outfile, stderr=errfile, text=True)
-        proc.communicate(f":load {scala_path}\n")
-    os.chdir(cur_dir)
-    print(f"SparkScala code in {scala_path} finished")
-    return
+    # Each model output gets its own container and its own input table.
+    try:
+        result = run_generated_code(exec_dir, "scala", os.path.basename(scala_path), num_cpu=num_cpu)
+    except SandboxExecutionError as exc:
+        with open(scala_path + ".err", "w", encoding="utf-8") as file:
+            file.write(str(exc))
+        return False
+    with open(scala_path + ".log", "w", encoding="utf-8") as file:
+        file.write(result.stdout)
+    with open(scala_path + ".err", "w", encoding="utf-8") as file:
+        file.write(result.stderr)
+    return result.returncode == 0
 
 def process_one_spark_result(exec_dir):
     assert os.path.isdir(exec_dir)
@@ -111,6 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_jobs", type=int, default=16,
                         help="The number of processes")
     args = parser.parse_args()
+    ensure_sandbox("scala")
     
     exec_root = os.path.abspath(args.exec_dir)
     exec_dirs = [exec_root + "/" + x for x in os.listdir(
@@ -124,8 +126,8 @@ if __name__ == "__main__":
     print(rst_df.sum(axis=0))  # count
     print(rst_df.sum(axis=0) / rst_df.shape[0])  # success rate
 
-    exec_scala_files = [os.path.join(exec_root, x) for x in os.listdir(exec_root) if x.endswith(".scala")]
-    params_list = [(exec_root, exec_scala_file, 1) for exec_scala_file in exec_scala_files]
+    params_list = [(case_dir, os.path.join(case_dir, "query.scala"), 1)
+                   for case_dir in exec_dirs if os.path.isfile(os.path.join(case_dir, "query.scala"))]
     with Pool(args.n_jobs) as pool:
         results = tqdm(pool.map(_run_spark, params_list), total=len(params_list), desc="Running Scala code")
 

@@ -1,7 +1,7 @@
 import json
 import pandas as pd
 import os
-import subprocess
+from table_specialist_sandbox import run_generated_code, ensure_sandbox
 import sqlite3
 from multiprocessing import Pool
 from tqdm import tqdm
@@ -23,8 +23,7 @@ def execute_one(exec_dir):
         else:
             # run the python code
             try:
-                result = subprocess.run(
-                    ['python3', "query.py"], capture_output=True, text=True, timeout=10)
+                result = run_generated_code(os.getcwd(), "python", "query.py", timeout=10)
                 exit_code = result.returncode
                 output = result.stdout.strip()
                 error = result.stderr.strip()
@@ -49,8 +48,7 @@ def execute_one(exec_dir):
         else:
             # run the R code
             try:
-                result = subprocess.run(
-                    ['Rscript', "query.R"], capture_output=True, text=True, timeout=10)
+                result = run_generated_code(os.getcwd(), "r", "query.R", timeout=10)
                 exit_code = result.returncode
                 output = result.stdout.strip()
                 error = result.stderr.strip()
@@ -120,6 +118,8 @@ if __name__ == "__main__":
     parser.add_argument("exec_dir", type=str,
                         help="The directory to execute")
     args = parser.parse_args()
+    ensure_sandbox("python")
+    ensure_sandbox("r")
     
     exec_root = os.path.abspath(args.exec_dir)
     exec_dirs = [exec_root + "/" + x for x in os.listdir(

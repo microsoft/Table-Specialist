@@ -12,7 +12,8 @@ from sqlglot.diff import Keep, Move
 import sqlite3
 import time
 import shutil
-import subprocess
+import tempfile
+from table_specialist_sandbox import run_generated_code, ensure_sandbox
 from multiprocessing import Pool
 from pandas.errors import EmptyDataError
 
@@ -105,42 +106,38 @@ class NPEvaluator(BaseEvaluator):
             y_true_res = [[pd.to_numeric(x, errors='ignore') for x in y_true_sql.split('|')]]
             csv_path = f"<PATH-TO-TableSpecialist>/Finetune/data/data_v2.0/NL2Pandas/benchmark/test/WikiQA/{test_id}/data.csv"
             
-        cur_exec_dir = f"{exec_dir}/{test_id}"
+        cur_exec_dir = None
         if y_pred_python == "PythonCodeBlockNotFound":
             y_pred_res = None
         else:
             try:
-                cur_dir = os.getcwd()
-                os.mkdir(cur_exec_dir)
-                os.chdir(cur_exec_dir)
+                cur_exec_dir = tempfile.mkdtemp(prefix="python_", dir=exec_dir)
                 shutil.copy(csv_path, os.path.join(cur_exec_dir, "data.csv"))
-                with open ("query.py", "w") as f:
+                with open(os.path.join(cur_exec_dir, "query.py"), "w", encoding="utf-8") as f:
                     f.write(y_pred_python)
                 # run the python code
-                result = subprocess.run(
-                    ['python3', "query.py"], capture_output=True, text=True)
+                result = run_generated_code(cur_exec_dir, "python", "query.py", timeout=10)
                 exit_code = result.returncode
                 output = result.stdout.strip()
                 error = result.stderr.strip()
 
                 if exit_code != 0:
-                    with open("python_exec.err", "w") as f:
+                    with open(os.path.join(cur_exec_dir, "python_exec.err"), "w", encoding="utf-8") as f:
                         f.write(error)
                     raise Exception(f"Python execution error: {error}")
                 
-                assert os.path.exists("result.csv")
+                result_path = os.path.join(cur_exec_dir, "result.csv")
+                assert os.path.exists(result_path)
                 try:
-                    y_pred_res = pd.read_csv("result.csv", index_col=False, header=None).applymap(lambda x: pd.to_numeric(x, errors='ignore')).fillna("None").values.tolist()
+                    y_pred_res = pd.read_csv(result_path, index_col=False, header=None).applymap(lambda x: pd.to_numeric(x, errors='ignore')).fillna("None").values.tolist()
                 except EmptyDataError:
                     y_pred_res = []
-                y_pred_res_path = os.path.abspath("result.csv")
+                y_pred_res_path = os.path.abspath(result_path)
             except Exception as e:
                 print("-----------------------")
                 print("Error y_pred")
                 print(e)
                 y_pred_res = "PythonExecutionError"
-            finally:
-                os.chdir(cur_dir)
 
         flag = False
         errorMsg = ""
@@ -221,6 +218,7 @@ class NPEvaluator(BaseEvaluator):
 
     
     def parse_raw_result(self, raw_result, n_jobs=1):
+        ensure_sandbox("python")
         result = []
         print("n_jobs", n_jobs)
         

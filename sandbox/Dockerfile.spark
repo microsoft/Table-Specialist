@@ -1,0 +1,6 @@
+# Supply a reviewed Apache Spark 3.5.x Linux base by immutable digest at build time.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ENV SPARK_HOME=/opt/spark
+ENV SPARK_LOCAL_DIRS=/tmp/spark
+USER 65534:65534

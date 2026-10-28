@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "table-specialist-sandbox"
+version = "0.1.0"
+description = "Fail-closed execution boundary for Table-Specialist model outputs"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+test = ["numpy==2.1.3", "pandas==2.2.3"]
+
+[tool.setuptools]
+py-modules = ["table_specialist_sandbox"]
